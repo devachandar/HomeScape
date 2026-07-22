@@ -1,12 +1,13 @@
 # HomeScape
 
-A microservices real-estate marketplace: buyers search and inquire about homes, sellers and agents list and
+A microservices real-estate marketplace, built as a system-design portfolio
+project: buyers search and inquire about homes, sellers and agents list and
 manage properties, and every service owns exactly one business domain and
 talks to the others over an event bus or a small internal API - never
 by sharing a database.
 
 Backend: **Django REST Framework, PostgreSQL, Redis, Elasticsearch.**
-Frontend: **React + Vite** 
+Frontend: **React + Vite.**
 
 ## Architecture
 
@@ -74,41 +75,6 @@ Full event catalog: `UserRegistered` · `PropertyCreated` ·
 `PropertyUpdated` · `PropertyDeleted` · `PropertyViewed` ·
 `InquiryCreated` · `InquiryResponded`.
 
-## Rebuilt on Django
-
-This started as a Node/Express backend and was rewritten service-by-service
-on Django REST Framework, with the **API contract held byte-for-byte
-identical** - same URL paths, same request/response JSON shapes, same JWT
-claim names (`sub`/`email`/`role`/`name`). The React frontend needed zero
-changes as a result.
-
-Two real bugs turned up doing this and are worth knowing about if you're
-comparing this to other Django rewrites:
-
-- **`request.user` on unauthenticated requests.** Property listing detail
-  is a public `GET` but an owner-only `PATCH`/`DELETE` on the same URL.
-  DRF's default behavior on a failed/absent authentication is to set
-  `request.user` to Django's `AnonymousUser` - which is truthy and has no
-  `.role` attribute, so `if not request.user` silently does the wrong
-  thing and `request.user.role` throws. Setting
-  `UNAUTHENTICATED_USER = None` in settings (see every service's
-  `config/settings.py`) makes `request.user` reliably `None` instead, so
-  the ownership checks behave the way the original Node middleware did.
-  This was caught by an actual cross-service smoke test - registering a
-  real user against Auth Service, then hitting Property Service with that
-  token - not just a code read-through.
-- **Nginx prefix matching and trailing slashes.** A handful of endpoints
-  are called at the bare resource path with nothing after it - `GET
-  /api/properties` (list), `GET /api/search`. A single `location
-  /api/properties/ { ... }` block (trailing slash) does **not** match a
-  request to `/api/properties` (no trailing slash) - Nginx's prefix match
-  is a literal string comparison. Each service in `nginx.conf` gets two
-  location blocks: an exact match for the bare path and a prefix match
-  for everything under it. Verified by actually running Nginx against a
-  live Django service and confirming both the bare list endpoint and a
-  nested endpoint route correctly, rather than assuming the config was
-  right.
-
 ## Services
 
 | Service | Owns | Port |
@@ -132,6 +98,26 @@ Only Auth Service has a real `User` table. Every other service verifies
 the same HS256-signed token locally via a small `jwt_auth.py` (copied into
 each service, like the Redis event-bus helper) - no per-request call back
 to Auth Service.
+
+Property listing detail is a public `GET` but an owner-only
+`PATCH`/`DELETE` on the same URL. DRF's default behavior on a
+failed/absent authentication is to set `request.user` to Django's
+`AnonymousUser` - which is truthy and has no `.role` attribute, so `if not
+request.user` would silently do the wrong thing and `request.user.role`
+would throw. Setting `UNAUTHENTICATED_USER = None` in settings (see every
+service's `config/settings.py`) makes `request.user` reliably `None`
+instead, so the ownership checks behave correctly for both anonymous and
+authenticated requests on the same endpoint.
+
+### Gateway routing
+
+A handful of endpoints are called at the bare resource path with nothing
+after it - `GET /api/properties` (list), `GET /api/search`. A single
+`location /api/properties/ { ... }` block (trailing slash) does **not**
+match a request to `/api/properties` (no trailing slash) - Nginx's prefix
+match is a literal string comparison. Each service in `nginx.conf` gets
+two location blocks: an exact match for the bare path and a prefix match
+for everything under it.
 
 ## Running it locally
 
@@ -180,26 +166,6 @@ python manage.py runserver 0.0.0.0:4001
 `python manage.py listen_events` alongside the web server (as its own
 process, matching the extra container each gets in `docker-compose.yml`).
 
-## What's simplified vs. the original design
-
-This is a working reference implementation sized for a portfolio, not a
-10-million-user deployment - a few deliberate simplifications, called out so
-they're easy to extend later:
-
-- **Event bus:** Redis pub/sub instead of Kafka/SNS+SQS. Swappable behind
-  the same `publish_event` / `listen_events` interface in each service.
-- **API Gateway:** Nginx handles routing, rate limiting, and CORS; each
-  downstream service still enforces its own auth, so the gateway stays a
-  thin layer rather than the source of truth.
-- **Analytics Service:** described in the design doc but not implemented
-  separately; `PropertyViewed` is published and ready for a consumer.
-- **Media Service upload endpoint is intentionally open** (no auth
-  required), matching the original design - not a security pass, just
-  carried forward as-is.
-- **Infra (CDN, Route53, ALB, ECS, Prometheus/Grafana, ELK):** out of scope
-  for local dev; `media-service`'s S3 driver and the Dockerfiles are meant
-  to make wiring up the real AWS deployment in the design doc a config
-  change, not a rewrite.
 
 ## Repo layout
 
